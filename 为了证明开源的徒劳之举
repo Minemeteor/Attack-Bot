@@ -1,0 +1,131 @@
+package com.attackbot.attackbotmod;
+
+import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.ai.goal.FollowTargetGoal;
+import net.minecraft.entity.ai.goal.LookAroundGoal;
+import net.minecraft.entity.ai.goal.LookAtEntityGoal;
+import net.minecraft.entity.ai.goal.MeleeAttackGoal;
+import net.minecraft.entity.ai.goal.SwimGoal;
+import net.minecraft.entity.ai.goal.WanderAroundGoal;
+import net.minecraft.entity.ai.goal.WanderAroundPointOfInterestGoal;
+import net.minecraft.entity.ai.pathing.Path;
+import net.minecraft.entity.mob.HostileEntity;
+import net.minecraft.entity.mob.PathAwareEntity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.util.ActionResult;
+import net.minecraft.util.Hand;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.World;
+import net.minecraft.client.options.KeyBinding;
+import org.lwjgl.glfw.GLFW;
+
+public class SmartNPC implements ModInitializer {
+    KeyBinding keyBinding = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.my_key", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_X, "category.my_category"));
+
+    @Override
+    public void onInitialize() {
+        AttackEntityCallback.EVENT.register((PlayerEntity player, World world, Hand hand, Entity entity, Vec3d hitVec) -> {
+            if (entity instanceof SmartNPCEntity) {
+                SmartNPCEntity npc = (SmartNPCEntity) entity;
+                npc.setAttackTarget(player);
+                return ActionResult.SUCCESS;
+            }
+            return ActionResult.PASS;
+        });
+    }
+
+    public static class SmartNPCEntity extends PathAwareEntity {
+        private static final int ATTACK_COOLDOWN = 20;
+        private static final float MAX_HEALTH = 20.0f;
+        private static final float ATTACK_DAMAGE = 4.0f;
+        private static final float ATTACK_RANGE = 2.0f;
+        private static final float MOVEMENT_SPEED = 0.3f;
+        private static final float FOLLOW_RANGE = 20.0f;
+        private static final float AVOID_DISTANCE = 5.0f;
+        private static final float AVOID_SPEED = 0.6f;
+
+        private int attackCooldown = 0;
+        private boolean shouldAvoid = false;
+        private BlockPos avoidTarget = null;
+
+        public SmartNPCEntity(World world, BlockPos pos) {
+            super(world);
+            this.setPos(pos.getX(), pos.getY(), pos.getZ());
+            this.setHealth(MAX_HEALTH);
+        }
+
+        @Override
+        protected void initGoals() {
+            this.goalSelector.add(0, new SwimGoal(this));
+            this.goalSelector.add(1, new WanderAroundPointOfInterestGoal(this, MOVEMENT_SPEED));
+            this.goalSelector.add(2, new LookAtEntityGoal(this, PlayerEntity.class, FOLLOW_RANGE));
+            this.goalSelector.add(3, new LookAroundGoal(this));
+            this.goalSelector.add(4, new MeleeAttackGoal(this, MOVEMENT_SPEED, true));
+            this.goalSelector.add(5, new WanderAroundGoal(this, MOVEMENT_SPEED));
+            this.targetSelector.add(1, new FollowTargetGoal<HostileEntity>(this, HostileEntity.class, true));
+        }
+
+        @Override
+        public void tick() {
+            super.tick();
+            if (this.attackCooldown > 0) {
+                this.attackCooldown--;
+            }
+            if (this.shouldAvoid) {
+                if (this.avoidTarget != null) {
+                    Path path = this.navigation.findPathTo(this.avoidTarget, 0);
+                    if (path != null) {
+                        this.navigation.startMovingAlong(path, AVOID_SPEED);
+                    }
+                }
+            } else {
+                this.navigation.stop();
+            }
+        }
+        @Override
+        public boolean canAttack(Entity target) {
+            return target instanceof PlayerEntity;
+        }
+
+        @Override
+        public boolean canTarget(EntityType<?> type) {
+            return type == EntityType.PLAYER || super.canTarget(type);
+        }
+
+        @Override
+        public void attack(LivingEntity target, float f) {
+            if (this.attackCooldown == 0) {
+                this.world.sendEntityStatus(this, (byte) 4);
+                float damage = target.damage(DamageSource.mob(this), ATTACK_DAMAGE);
+                if (damage > 0.0f) {
+                    this.applyDamageEffects(this, target);
+                }
+                this.attackCooldown = ATTACK_COOLDOWN;
+            }
+        }
+
+        public void setAvoidTarget(BlockPos pos) {
+            this.shouldAvoid = true;
+            this.avoidTarget = pos;
+        }
+
+        public void clearAvoidTarget() {
+            this.shouldAvoid = false;
+            this.avoidTarget = null;
+        }
+
+        @Override
+        public void onDeath(DamageSource cause) {
+            super.onDeath(cause);
+            if (cause.getAttacker() instanceof PlayerEntity) {
+                PlayerEntity player = (PlayerEntity) cause.getAttacker();
+                BlockPos pos = new BlockPos(player.getX(), player.getY(), player.getZ());
+                this.setAvoidTarget(pos);
+            }
+        }
+    }
+}
